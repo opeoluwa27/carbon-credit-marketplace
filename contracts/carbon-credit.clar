@@ -1,12 +1,10 @@
 ;; carbon-credit.clar
 ;; Carbon Credit Marketplace Smart Contract
-
 ;; This contract manages the lifecycle of carbon credits on the Stacks blockchain,
 ;; from initial verification and minting to trading and retirement.
 ;; It creates a transparent, verifiable registry of carbon credits that represent
 ;; real-world carbon offsets, allowing users to purchase, trade, and retire credits
 ;; to offset their carbon footprint.
-
 ;; ========== Error Constants ==========
 (define-constant ERR-NOT-AUTHORIZED (err u100))
 (define-constant ERR-INVALID-VERIFIER (err u101))
@@ -22,22 +20,27 @@
 (define-constant ERR-LISTING-ALREADY-EXISTS (err u111))
 (define-constant ERR-NOT-OWNER (err u112))
 (define-constant ERR-PAYMENT-FAILED (err u113))
-
 ;; ========== Data Space Definitions ==========
-
 ;; Governance
 ;; Contract administrator - can add/remove verifiers
 (define-data-var contract-owner principal tx-sender)
-
 ;; Registry of authorized verifiers who can approve project developers
-(define-map authorized-verifiers principal bool)
-
-;; Registry of verified project developers who can mint carbon credits
-(define-map verified-project-developers 
-  { developer: principal, verifier: principal }
-  { approved: bool, timestamp: uint, project-name: (string-ascii 100) }
+(define-map authorized-verifiers
+  principal
+  bool
 )
-
+;; Registry of verified project developers who can mint carbon credits
+(define-map verified-project-developers
+  {
+    developer: principal,
+    verifier: principal,
+  }
+  {
+    approved: bool,
+    timestamp: uint,
+    project-name: (string-ascii 100),
+  }
+)
 ;; Carbon Credit Metadata
 (define-map carbon-credits
   { credit-id: uint }
@@ -53,16 +56,20 @@
     issuance-date: uint, ;; timestamp of minting
     retired: bool, ;; whether the credit has been used for offsetting
     retirement-beneficiary: (optional principal), ;; who claimed the offset, if retired
-    retirement-date: (optional uint) ;; when the credit was retired
+    retirement-date: (optional uint), ;; when the credit was retired
   }
 )
-
 ;; Tracks total credits owned by each user
-(define-map credit-balances 
-  { owner: principal, credit-id: uint }
-  { active-amount: uint, retired-amount: uint }
+(define-map credit-balances
+  {
+    owner: principal,
+    credit-id: uint,
+  }
+  {
+    active-amount: uint,
+    retired-amount: uint,
+  }
 )
-
 ;; Marketplace listings
 (define-map marketplace-listings
   { listing-id: uint }
@@ -71,23 +78,18 @@
     credit-id: uint,
     amount: uint,
     price-per-ton: uint, ;; in microSTX per ton
-    active: bool
+    active: bool,
   }
 )
-
 ;; Counter for credit IDs
 (define-data-var next-credit-id uint u1)
-
 ;; Counter for listing IDs
 (define-data-var next-listing-id uint u1)
-
 ;; Total volume statistics
 (define-data-var total-credits-minted uint u0)
 (define-data-var total-credits-retired uint u0)
 (define-data-var total-credits-traded uint u0)
-
 ;; ========== Private Functions ==========
-
 ;; Check if the caller is the contract owner
 (define-private (is-contract-owner)
   (is-eq tx-sender (var-get contract-owner))
@@ -100,7 +102,10 @@
 
 ;; Check if a principal is a verified project developer
 (define-private (is-verified-developer (developer principal))
-  (match (map-get? verified-project-developers { developer: developer, verifier: tx-sender })
+  (match (map-get? verified-project-developers {
+    developer: developer,
+    verifier: tx-sender,
+  })
     developer-data (get approved developer-data)
     false
   )
@@ -115,85 +120,46 @@
 )
 
 ;; Check if sender owns sufficient active credits
-(define-private (has-sufficient-credits (owner principal) (credit-id uint) (amount uint))
-  (match (map-get? credit-balances { owner: owner, credit-id: credit-id })
+(define-private (has-sufficient-credits
+    (owner principal)
+    (credit-id uint)
+    (amount uint)
+  )
+  (match (map-get? credit-balances {
+    owner: owner,
+    credit-id: credit-id,
+  })
     balance-data (>= (get active-amount balance-data) amount)
     false
   )
 )
 
-;; Update a user's credit balance
-(define-private (update-credit-balance (owner principal) (credit-id uint) (active-delta int) (retired-delta int))
-  (let
-    (
-      (current-balance (default-to { active-amount: u0, retired-amount: u0 } 
-                        (map-get? credit-balances { owner: owner, credit-id: credit-id })))
-      (new-active (+ (get active-amount current-balance) active-delta))
-      (new-retired (+ (get retired-amount current-balance) retired-delta))
-    )
-    (map-set credit-balances 
-      { owner: owner, credit-id: credit-id }
-      { active-amount: new-active, retired-amount: new-retired }
-    )
-  )
-)
-
-;; Transfer credits between users (used by marketplace functions)
-(define-private (transfer-credits (from principal) (to principal) (credit-id uint) (amount uint))
-  (begin
-    ;; Decrease sender's active balance
-    (update-credit-balance from credit-id (* amount u-1) u0)
-    ;; Increase recipient's active balance
-    (update-credit-balance to credit-id amount u0)
-    ;; Update total traded volume
-    (var-set total-credits-traded (+ (var-get total-credits-traded) amount))
-    (ok true)
-  )
-)
-
 ;; ========== Read-Only Functions ==========
-
 ;; Get credit details by ID
 (define-read-only (get-credit-details (credit-id uint))
   (map-get? carbon-credits { credit-id: credit-id })
 )
 
-;; Get user's active balance for a specific credit
-(define-read-only (get-active-balance (owner principal) (credit-id uint))
-  (default-to u0 (get active-amount (default-to { active-amount: u0, retired-amount: u0 }
-                  (map-get? credit-balances { owner: owner, credit-id: credit-id }))))
-)
-
-;; Get user's retired balance for a specific credit
-(define-read-only (get-retired-balance (owner principal) (credit-id uint))
-  (default-to u0 (get retired-amount (default-to { active-amount: u0, retired-amount: u0 }
-                  (map-get? credit-balances { owner: owner, credit-id: credit-id }))))
-)
-
-;; Check if a project developer is verified
-(define-read-only (is-developer-verified (developer principal))
-  (fold and true (map is-authorized-verifier
-    (map get-verifier-from-developer
-      (get-developer-verifiers developer))))
-)
-
 ;; Helper function to get verifier from developer-verifier pair
-(define-read-only (get-verifier-from-developer (developer-verifier { developer: principal, verifier: principal }))
+(define-read-only (get-verifier-from-developer (developer-verifier {
+  developer: principal,
+  verifier: principal,
+}))
   (get verifier developer-verifier)
 )
 
-;; Get all verifiers for a developer
-(define-read-only (get-developer-verifiers (developer principal))
-  (filter has-developer-verifier
-    (map add-developer-to-tuple
-      (map-to-tuple (unwrap-panic (as-max-len? (keys authorized-verifiers) u100))))))
-
 ;; Helper functions for querying developer-verifier relationships
 (define-read-only (add-developer-to-tuple (verifier principal))
-  { developer: tx-sender, verifier: verifier }
+  {
+    developer: tx-sender,
+    verifier: verifier,
+  }
 )
 
-(define-read-only (has-developer-verifier (developer-verifier { developer: principal, verifier: principal }))
+(define-read-only (has-developer-verifier (developer-verifier {
+  developer: principal,
+  verifier: principal,
+}))
   (is-some (map-get? verified-project-developers developer-verifier))
 )
 
@@ -207,14 +173,12 @@
   {
     total-minted: (var-get total-credits-minted),
     total-retired: (var-get total-credits-retired),
-    total-traded: (var-get total-credits-traded)
+    total-traded: (var-get total-credits-traded),
   }
 )
 
 ;; ========== Public Functions ==========
-
 ;; Administrative Functions
-
 ;; Transfer contract ownership
 (define-public (transfer-ownership (new-owner principal))
   (begin
@@ -245,15 +209,21 @@
 )
 
 ;; Project Developer Registration
-
 ;; Register a new project developer (can only be called by authorized verifiers)
-(define-public (register-project-developer (developer principal) (project-name (string-ascii 100)))
+(define-public (register-project-developer
+    (developer principal)
+    (project-name (string-ascii 100))
+  )
   (begin
     (asserts! (is-authorized-verifier tx-sender) ERR-NOT-AUTHORIZED)
-    (map-set verified-project-developers 
-      { developer: developer, verifier: tx-sender }
-      { approved: true, timestamp: block-height, project-name: project-name }
-    )
+    (map-set verified-project-developers {
+      developer: developer,
+      verifier: tx-sender,
+    } {
+      approved: true,
+      timestamp: block-height,
+      project-name: project-name,
+    })
     (ok true)
   )
 )
@@ -262,10 +232,15 @@
 (define-public (revoke-project-developer (developer principal))
   (begin
     (asserts! (is-authorized-verifier tx-sender) ERR-NOT-AUTHORIZED)
-    (match (map-get? verified-project-developers { developer: developer, verifier: tx-sender })
+    (match (map-get? verified-project-developers {
+      developer: developer,
+      verifier: tx-sender,
+    })
       developer-data (begin
-        (map-set verified-project-developers 
-          { developer: developer, verifier: tx-sender }
+        (map-set verified-project-developers {
+          developer: developer,
+          verifier: tx-sender,
+        }
           (merge developer-data { approved: false })
         )
         (ok true)
@@ -275,183 +250,48 @@
   )
 )
 
-;; Carbon Credit Lifecycle Management
-
-;; Mint new carbon credits (only verified project developers)
-(define-public (mint-carbon-credits
-  (amount uint)
-  (project-type (string-ascii 50))
-  (location (string-ascii 50))
-  (verification-standard (string-ascii 50))
-  (vintage-year uint)
-  (serial-number (string-ascii 100))
-)
-  (let
-    (
-      (developer tx-sender)
-      (credit-id (var-get next-credit-id))
-    )
-    (asserts! (is-developer-verified developer) ERR-INVALID-PROJECT-DEVELOPER)
-    (asserts! (> amount u0) ERR-INSUFFICIENT-CREDITS)
-    
-    ;; Create new credit record
-    (map-set carbon-credits
-      { credit-id: credit-id }
-      {
-        owner: developer,
-        project-developer: developer,
-        amount: amount,
-        project-type: project-type,
-        location: location,
-        verification-standard: verification-standard,
-        vintage-year: vintage-year,
-        serial-number: serial-number,
-        issuance-date: block-height,
-        retired: false,
-        retirement-beneficiary: none,
-        retirement-date: none
-      }
-    )
-    
-    ;; Update developer's balance
-    (update-credit-balance developer credit-id amount u0)
-    
-    ;; Update global counters
-    (var-set next-credit-id (+ credit-id u1))
-    (var-set total-credits-minted (+ (var-get total-credits-minted) amount))
-    
-    (ok credit-id)
-  )
-)
-
-;; Transfer credits to another user
-(define-public (transfer-carbon-credits (recipient principal) (credit-id uint) (amount uint))
-  (let
-    (
-      (sender tx-sender)
-    )
-    (asserts! (map-get? carbon-credits { credit-id: credit-id }) ERR-INVALID-CREDIT-ID)
-    (asserts! (is-active-credit credit-id) ERR-CREDIT-RETIRED)
-    (asserts! (has-sufficient-credits sender credit-id amount) ERR-INSUFFICIENT-CREDITS)
-    
-    (transfer-credits sender recipient credit-id amount)
-  )
-)
-
-;; Retire carbon credits (permanent claim of offset)
-(define-public (retire-carbon-credits 
-  (credit-id uint) 
-  (amount uint)
-  (beneficiary (optional principal))
-)
-  (let
-    (
-      (sender tx-sender)
-      (actual-beneficiary (default-to sender beneficiary))
-    )
-    (asserts! (map-get? carbon-credits { credit-id: credit-id }) ERR-INVALID-CREDIT-ID)
-    (asserts! (is-active-credit credit-id) ERR-CREDIT-RETIRED)
-    (asserts! (has-sufficient-credits sender credit-id amount) ERR-INSUFFICIENT-CREDITS)
-    
-    ;; Decrease active balance and increase retired balance
-    (update-credit-balance sender credit-id (* amount u-1) amount)
-    
-    ;; Update retirement information in the credit metadata
-    ;; Note: We keep the original credit record but track retirement in balances
-    ;; This is simplification - in a production system, you might want to track
-    ;; each retirement event separately
-    
-    ;; Update global counters
-    (var-set total-credits-retired (+ (var-get total-credits-retired) amount))
-    
-    (ok true)
-  )
-)
 
 ;; Marketplace Functions
-
 ;; List carbon credits for sale
-(define-public (list-credits-for-sale (credit-id uint) (amount uint) (price-per-ton uint))
-  (let
-    (
+(define-public (list-credits-for-sale
+    (credit-id uint)
+    (amount uint)
+    (price-per-ton uint)
+  )
+  (let (
       (seller tx-sender)
       (listing-id (var-get next-listing-id))
     )
-    (asserts! (map-get? carbon-credits { credit-id: credit-id }) ERR-INVALID-CREDIT-ID)
     (asserts! (is-active-credit credit-id) ERR-CREDIT-RETIRED)
-    (asserts! (has-sufficient-credits seller credit-id amount) ERR-INSUFFICIENT-CREDITS)
-    (asserts! (> price-per-ton u0) ERR-INVALID-PRICE)
-    
-    ;; Create listing
-    (map-set marketplace-listings
-      { listing-id: listing-id }
-      {
-        seller: seller,
-        credit-id: credit-id,
-        amount: amount,
-        price-per-ton: price-per-ton,
-        active: true
-      }
+    (asserts! (has-sufficient-credits seller credit-id amount)
+      ERR-INSUFFICIENT-CREDITS
     )
-    
+    (asserts! (> price-per-ton u0) ERR-INVALID-PRICE)
+    ;; Create listing
+    (map-set marketplace-listings { listing-id: listing-id } {
+      seller: seller,
+      credit-id: credit-id,
+      amount: amount,
+      price-per-ton: price-per-ton,
+      active: true,
+    })
     ;; Update listing counter
     (var-set next-listing-id (+ listing-id u1))
-    
     (ok listing-id)
   )
 )
 
 ;; Cancel a listing
 (define-public (cancel-listing (listing-id uint))
-  (let
-    (
-      (listing (unwrap! (map-get? marketplace-listings { listing-id: listing-id }) ERR-LISTING-NOT-FOUND))
-    )
+  (let ((listing (unwrap! (map-get? marketplace-listings { listing-id: listing-id })
+      ERR-LISTING-NOT-FOUND
+    )))
     (asserts! (is-eq tx-sender (get seller listing)) ERR-NOT-OWNER)
     (asserts! (get active listing) ERR-LISTING-NOT-FOUND)
-    
     ;; Deactivate listing
-    (map-set marketplace-listings
-      { listing-id: listing-id }
+    (map-set marketplace-listings { listing-id: listing-id }
       (merge listing { active: false })
     )
-    
     (ok true)
-  )
-)
-
-;; Buy carbon credits from a listing
-(define-public (buy-carbon-credits (listing-id uint))
-  (let
-    (
-      (listing (unwrap! (map-get? marketplace-listings { listing-id: listing-id }) ERR-LISTING-NOT-FOUND))
-      (buyer tx-sender)
-      (seller (get seller listing))
-      (credit-id (get credit-id listing))
-      (amount (get amount listing))
-      (price-per-ton (get price-per-ton listing))
-      (total-price (* amount price-per-ton))
-    )
-    (asserts! (get active listing) ERR-LISTING-NOT-FOUND)
-    (asserts! (not (is-eq buyer seller)) ERR-INVALID-PROJECT-DEVELOPER) ;; Can't buy your own listing
-    (asserts! (is-active-credit credit-id) ERR-CREDIT-RETIRED)
-    (asserts! (has-sufficient-credits seller credit-id amount) ERR-INSUFFICIENT-CREDITS)
-    
-    ;; Process payment from buyer to seller
-    (match (stx-transfer? total-price buyer seller)
-      success-response (begin
-        ;; Transfer credits
-        (try! (transfer-credits seller buyer credit-id amount))
-        
-        ;; Deactivate listing
-        (map-set marketplace-listings
-          { listing-id: listing-id }
-          (merge listing { active: false })
-        )
-        
-        (ok true)
-      )
-      error-response ERR-PAYMENT-FAILED
-    )
   )
 )
